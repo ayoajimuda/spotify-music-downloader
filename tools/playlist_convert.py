@@ -1,16 +1,17 @@
-"""Save a YouTube / YouTube Music playlist to the export folder as JSON, TXT or CSV.
+"""Save a Spotify playlist (or album, or artist) to the export folder as JSON, TXT or CSV.
 
 JSON  {"playlist": ..., "source": ..., "exported": ..., "updated": ..., "track_count": N,
-       "tracks": [{"artist", "title", "url"}], "unavailable": [{"title", "id"}]}
+       "tracks": [{"artist", "title", "album", "url"}]}
 TXT   # Playlist: Road Trip
-      Daft Punk - One More Time | https://music.youtube.com/watch?v=...
-      # [Private video] (unavailable, id xxxxxxxxxxx)
-CSV   artist,title,url,status,note   (opens in Excel; unavailable rows have no url)
+      Daft Punk - One More Time | https://open.spotify.com/track/...
+CSV   artist,title,album,url,status,note   (opens in Excel)
 
 All three can be downloaded with "every link in a file": the batch downloader
-marks each track it downloads (status=success), and private/deleted tracks
-have no link, so they're never attempted. Exporting again into the same file
-adds only the new tracks, so those marks are kept.
+marks each track it downloads (status=success), so an interrupted run carries
+on where it stopped. Exporting again into the same file adds only the new
+tracks, so those marks are kept.
+
+The song list comes from spotDL (`spotdl save`); nothing is downloaded.
 
 Usage:
     from tools.playlist_convert import export_playlist, playlist_convert
@@ -28,24 +29,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Set
-from urllib.parse import parse_qs, urlsplit
 
 from managers import config_manager
 from menu.colorful_menu import Enhanced_Menu
-from tools.dependency_check import find_program, run_program
 
-YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com",
-                 "music.youtube.com", "youtu.be"}
 FORMATS = {
     "json": "JSON - structured, keeps playlist details",
     "txt": "TXT - one 'Artist - Title | link' per line, easy to edit",
     "csv": "CSV - a table that opens in Excel / Google Sheets",
 }
-CSV_HEADER = ["artist", "title", "url", "status", "note"]
-UNAVAILABLE_ID = re.compile(r"unavailable,? (?:id )?\(?([A-Za-z0-9_-]{11})\)?")
-UNAVAILABLE_TITLES = {"[private video]", "[deleted video]", "[unavailable video]"}
-VIDEO_ID = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})")
-FETCH_TIMEOUT = 600          # big playlists take a while to list
+CSV_HEADER = ["artist", "title", "album", "url", "status", "note"]
+EXPORTABLE = ("playlist", "album", "artist")
+TRACK_ID = re.compile(r"open\.spotify\.com/track/([A-Za-z0-9]{22})")
+UNAVAILABLE_ID = re.compile(r"unavailable,? (?:id )?\(?([A-Za-z0-9]{22})\)?")
 
 
 class PlaylistError(Exception):
@@ -54,28 +50,34 @@ class PlaylistError(Exception):
 
 @dataclass
 class Track:
-    video_id: str
+    track_id: str
     title: str
     artist: str
     url: str
     available: bool = True
+    album: str = ""
+
+    @property
+    def video_id(self) -> str:          # the YouTube version's name for the ID
+        return self.track_id
 
     def record(self) -> dict:
         if not self.available:                 # no link: the downloader won't try it
-            return {"title": self.title, "id": self.video_id}
-        return {"artist": self.artist, "title": self.title, "url": self.url}
+            return {"title": self.title, "id": self.track_id}
+        return {"artist": self.artist, "title": self.title, "album": self.album,
+                "url": self.url}
 
     def line(self) -> str:
         if not self.available:
-            return f"# {self.title} (unavailable, id {self.video_id})"
+            return f"# {self.title} (unavailable, id {self.track_id})"
         name = f"{self.artist} - {self.title}" if self.artist else self.title
-        name = name.replace("|", "/").strip() or self.video_id
+        name = name.replace("|", "/").strip() or self.track_id
         return f"{name} | {self.url}"
 
     def row(self) -> List[str]:
         if not self.available:
-            return ["", self.title, "", "", f"unavailable ({self.video_id})"]
-        return [self.artist, self.title, self.url, "", ""]
+            return ["", self.title, self.album, "", "", f"unavailable ({self.track_id})"]
+        return [self.artist, self.title, self.album, self.url, "", ""]
 
 
 @dataclass
@@ -99,81 +101,41 @@ def safe_filename(name: str, fallback: str = "playlist") -> str:
     return name[:100].rstrip(". ") or fallback
 
 
-def looks_like_youtube(url: str) -> bool:
+def looks_like_spotify(url: str) -> bool:
+    """A Spotify playlist, album or artist link (or spotify: URI)."""
+    from downloader.base_downloader import spotify_kind
+    return spotify_kind(url) in EXPORTABLE
+
+
+def fetch_playlist(url: str, downloader=None) -> dict:
+    """The playlist's details from spotDL (spotdl save), without downloading anything."""
+    from downloader.base_downloader import SpotifyDownloader, spotify_kind
+    kind = spotify_kind(url)
+    if kind == "track":
+        raise PlaylistError("That's a single song. Use 'Download a track' for songs.")
+    if kind not in EXPORTABLE:
+        raise PlaylistError("Paste a Spotify playlist, album or artist link "
+                            "(Share -> Copy link in Spotify).")
+    downloader = downloader if hasattr(downloader, "fetch_info") else SpotifyDownloader()
     try:
-        return (urlsplit(url.strip()).hostname or "").lower() in YOUTUBE_HOSTS
-    except ValueError:
-        return False
-
-
-def _cookie_args() -> List[str]:
-    """Use the active cookies when cookies are on, so private playlists work too."""
-    if not config_manager.load().get("use_cookies"):
-        return []
-    try:
-        from managers import cookie_manager
-        active = cookie_manager.get_active_cookie_file()
-    except Exception:
-        active = None
-    return ["--cookies", str(active.resolve())] if active else []
-
-
-def _explain(output: str) -> str:
-    low = output.lower()
-    if "sign in to confirm" in low or "not a bot" in low:
-        return "YouTube wants a sign-in (bot check). Add cookies in the Cookies menu, then retry."
-    if "private" in low and "playlist" in low:
-        return "This playlist is private. Turn cookies on with the account that owns it."
-    if "does not exist" in low or "404" in low:
-        return "That playlist doesn't exist (check the link)."
-    if "429" in low or "too many requests" in low:
-        return "YouTube is throttling requests. Wait a while and try again."
-    errors = [l for l in output.splitlines() if l.strip().upper().startswith("ERROR")]
-    return (errors[-1] if errors else output.strip()[-300:]) or "yt-dlp failed without a message"
-
-
-def fetch_playlist(url: str) -> dict:
-    """The playlist's details from yt-dlp, without downloading anything."""
-    ytdlp, where = find_program("yt-dlp")
-    if not ytdlp:
-        raise PlaylistError(f"yt-dlp is needed for this ({where}). Run the dependency check.")
-    code, output = run_program(
-        [ytdlp, "--flat-playlist", "--dump-single-json", "--no-warnings", *_cookie_args(),
-         url.strip()], timeout=FETCH_TIMEOUT)
-    if code is None:
-        raise PlaylistError(output)
-    if code != 0:
-        raise PlaylistError(_explain(output))
-    start = output.find("{")
-    try:
-        info = json.loads(output[start:output.rfind("}") + 1]) if start >= 0 else {}
-    except ValueError:
-        raise PlaylistError("yt-dlp returned something that isn't playlist data.")
-    if info.get("_type") != "playlist":
-        raise PlaylistError("That link is a single video, not a playlist. Use 'Download a "
-                            "track' for single videos.")
+        ok, message, info = downloader.fetch_info(url, kind)
+    except RuntimeError as error:               # spotDL isn't installed
+        raise PlaylistError(f"{error}. Run the dependency check.")
+    if not ok or not info:
+        raise PlaylistError(message)
     return info
 
 
-def _host_for(url: str) -> str:
-    host = (urlsplit(url).hostname or "").lower()
-    return "music.youtube.com" if host == "music.youtube.com" else "www.youtube.com"
-
-
-def tracks_from(info: dict, source_url: str) -> List[Track]:
-    host = _host_for(source_url)
-    tracks = []
+def tracks_from(info: dict, source_url: str = "") -> List[Track]:
+    tracks, seen = [], set()
     for entry in info.get("entries") or []:
-        if not entry or not entry.get("id"):
+        if not entry or not entry.get("id") or entry["id"] in seen:
             continue
-        title = (entry.get("title") or "").strip()
-        artist = (entry.get("channel") or entry.get("uploader") or "").strip()
-        if artist.endswith(" - Topic"):               # YouTube Music's auto-generated channels
-            artist = artist[: -len(" - Topic")]
-        available = title.lower() not in UNAVAILABLE_TITLES and \
-            entry.get("availability") not in ("private", "needs_auth", "premium_only")
-        tracks.append(Track(entry["id"], title or entry["id"], artist if available else "",
-                            f"https://{host}/watch?v={entry['id']}", available))
+        seen.add(entry["id"])
+        tracks.append(Track(entry["id"], (entry.get("title") or entry["id"]).strip(),
+                            (entry.get("artist") or "").strip(),
+                            entry.get("url") or f"https://open.spotify.com/track/{entry['id']}",
+                            True, (entry.get("album") or "").strip()))
     return tracks
 
 
@@ -194,15 +156,15 @@ def format_of(path: Path, fmt: Optional[str] = None) -> str:
 
 
 def _ids_in_text(text: str) -> Set[str]:
-    """Video IDs already in a TXT or CSV export (unavailable ones included)."""
-    return set(VIDEO_ID.findall(text)) | set(UNAVAILABLE_ID.findall(text))
+    """Track IDs already in a TXT or CSV export (unavailable ones included)."""
+    return set(TRACK_ID.findall(text)) | set(UNAVAILABLE_ID.findall(text))
 
 
 def _ids_in_json(data: dict) -> Set[str]:
     ids = set()
     for track in data.get("tracks") or []:
         if isinstance(track, dict):
-            ids.update(VIDEO_ID.findall(str(track.get("url", ""))))
+            ids.update(TRACK_ID.findall(str(track.get("url", ""))))
     for track in data.get("unavailable") or []:
         if isinstance(track, dict) and track.get("id"):
             ids.add(str(track["id"]))
@@ -337,7 +299,7 @@ def export_playlist(url: str, output: Optional[Path] = None, merge: bool = True,
             raise PlaylistError(f"{path.name} isn't a playlist export, so new tracks can't be "
                                 "added to it. Replace it or save under another name.")
         known = _known_ids(path, fmt)
-        new = [t for t in tracks if t.video_id not in known]
+        new = [t for t in tracks if t.track_id not in known]
         if new:
             _write_atomically(path, add_to(path, new, stamp), encoding)
         return PlaylistExport(path, title, len(tracks), len(new),
@@ -357,19 +319,19 @@ def playlist_convert(downloader=None) -> Optional[PlaylistExport]:
     def valid(text: str):
         if not text.strip():
             return True                                     # empty = cancel
-        return True if looks_like_youtube(text) else "Paste a YouTube or YouTube Music link"
+        return True if looks_like_spotify(text) else \
+            "Paste a Spotify playlist, album or artist link"
 
-    url = questionary.text("Playlist link (empty to cancel):", validate=valid).ask()
-    url = (url or "").strip()
+    url = questionary.text("Spotify playlist, album or artist link (empty to cancel):",
+                           validate=valid).ask()
+    url = (url or "").strip().strip('"').strip("'")
     if not url:
         return None
-    if "list=" not in url and "/playlist" not in url and "/browse/" not in url:
-        Enhanced_Menu.print_status("That doesn't look like a playlist link (no 'list='). "
-                                   "Trying anyway.", "warning")
 
-    Enhanced_Menu.print_status("Reading the playlist... (large playlists take a minute)", "info")
+    Enhanced_Menu.print_status("Reading it from Spotify... (large playlists take a minute)",
+                               "info")
     try:
-        info_preview = fetch_playlist(url)
+        info_preview = fetch_playlist(url, downloader)
     except PlaylistError as error:
         Enhanced_Menu.print_status(str(error), "error")
         return None
@@ -416,10 +378,10 @@ def playlist_convert(downloader=None) -> Optional[PlaylistExport]:
     Enhanced_Menu.print_key_value("Added", result.added, width=16)
     if result.unavailable:
         Enhanced_Menu.print_key_value("Unavailable", result.unavailable, width=16,
-                                      note="private/deleted, no link (never downloaded)")
+                                      note="no link (never downloaded)")
 
     if downloader is not None and result.total and questionary.confirm(
-            "Download this playlist now?", default=False).ask():
+            "Download these songs now?", default=False).ask():
         config_manager.update(last_batch_file=str(result.path.resolve()))
         downloader.download_from_file(str(result.path))
     return result
@@ -427,3 +389,7 @@ def playlist_convert(downloader=None) -> Optional[PlaylistExport]:
 
 # The old name, so code written before the rename keeps working.
 playlist_to_txt = playlist_convert
+
+
+# The YouTube version's name for the link check.
+looks_like_youtube = looks_like_spotify

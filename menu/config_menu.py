@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 import questionary
 
 from managers import config_manager
-from config import (
+from managers.config_manager import (
     CONFIG_SCHEMA, PROFILE_DESCRIPTIONS, apply_config_profile, get_config_profile,
     list_profiles, load_config, reset_to_defaults, settings_by_group, update_config,
     validate_config,
@@ -42,8 +42,13 @@ def _pause() -> None:
 def _show(key: str, value: Any) -> str:
     if isinstance(value, bool):
         return "✓ Enabled" if value else "✗ Disabled"
-    if value == "" and CONFIG_SCHEMA.get(key, {}).get("must_exist"):
+    rules = CONFIG_SCHEMA.get(key, {})
+    if value == "" and rules.get("must_exist"):
         return "(use the one on PATH)"
+    if value == "" and rules.get("optional_login"):
+        return "(not set - spotDL's built-in login is used)"
+    if value and rules.get("secret"):
+        return "•" * 8 + str(value)[-4:]
     return str(value)
 
 
@@ -147,6 +152,12 @@ def _ask_value(key: str, current: Any):
         return questionary.path(f"New value for {_label(key)}{hint}:",
                                 default=str(current or ""),
                                 only_directories=key == "output_directory").ask()
+    if rules.get("secret"):
+        return questionary.password(f"New value for {_label(key)} (blank = not set):").ask()
+    if rules.get("optional_login"):
+        print("  Optional: create an app at https://developer.spotify.com/dashboard and copy "
+              "its Client ID and Secret.\n  Set both, or leave both blank for spotDL's "
+              "built-in login.")
     return questionary.text(f"New value for {_label(key)}:", default=str(current or "")).ask()
 
 

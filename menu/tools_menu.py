@@ -1,4 +1,4 @@
-"""Tools menu: dependency check, yt-dlp updates, cookie check, playlist export, audio format.
+"""Tools menu: dependency check, spotDL updates, cookie check, playlist export, audio format.
 
 Usage:
     from menu import tools_menu
@@ -55,8 +55,14 @@ def open_folders(downloader) -> None:
 
 
 HELP = (
-    ("Downloads suddenly failing?", "Check for yt-dlp updates. YouTube changes often, and an "
-     "old yt-dlp is the most common cause of 403 errors."),
+    ("Downloads suddenly failing?", "Check for spotDL updates. spotDL gets the audio from "
+     "YouTube Music through yt-dlp; YouTube changes often, and an old spotDL or yt-dlp is the "
+     "most common cause of 403 errors."),
+    ("'Spotify rate limit' (429)?", "spotDL's shared Spotify login is used by everyone. Make "
+     "your own free app at developer.spotify.com and put its Client ID and Secret in the "
+     "Config Menu."),
+    ("'No match found'?", "spotDL couldn't find the song on YouTube Music. Rare or very new "
+     "songs sometimes aren't there; try again later or search 'Artist - Title'."),
     ("'Sign in to confirm you're not a bot'?", "Run the cookie check. Export cookies from a "
      "private window and close it afterwards, so they last longer."),
     ("Throttled (HTTP 429)?", "Stop for a while. Throttled links go into the retry queue; "
@@ -65,7 +71,7 @@ HELP = (
     ("Downloading a whole playlist later?", "Convert it to a .txt file first. Downloading "
      "from the file marks each finished track, so an interrupted run carries on where it "
      "stopped, and exporting again adds only new tracks."),
-    ("Which format?", "mp3 plays everywhere; opus or m4a keep YouTube's audio with the "
+    ("Which format?", "mp3 plays everywhere; opus or m4a keep YouTube Music's audio with the "
      "smallest files; flac if you want no further loss."),
 )
 
@@ -85,10 +91,12 @@ def _items(downloader):
     from tools.cookie_check import cookie_checker
     from tools.dependency_check import dependency_check
     from tools.playlist_convert import playlist_convert
+    from tools.spotdl_update_checker import check_spotdl_updates, notify_update_available
     return [
-        ("Check dependencies (yt-dlp, ffmpeg, ...)", dependency_check),
+        ("Check dependencies (spotDL, ffmpeg, ...)", dependency_check),
+        ("Check for spotDL updates", lambda: notify_update_available(check_spotdl_updates())),
         ("Check cookies", cookie_checker),
-        ("Export a playlist (JSON, TXT or CSV)", lambda: playlist_convert(downloader)),
+        ("Export a Spotify playlist or album (JSON, TXT or CSV)", lambda: playlist_convert(downloader)),
         ("Choose audio format", lambda: choose_audio_format(downloader)),
         ("Choose download folder", lambda: choose_download_directory(downloader)),
         ("Open a folder", lambda: open_folders(downloader)),

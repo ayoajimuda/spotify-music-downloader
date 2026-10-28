@@ -1,4 +1,4 @@
-"""Reading and writing link lists held in a .txt or .csv file"""
+"""Reading and writing link lists (Spotify links) held in a .txt, .csv or .json file"""
 
 import codecs
 import csv
@@ -11,11 +11,21 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-# Scan for full links plus YouTube links pasted without a scheme
+# Scan for full links, spotify: URIs, plus Spotify/YouTube links pasted without a scheme
 URL_IN_TEXT = re.compile(
-    r"(?:https?://|spotify:)\S+"
+    r"(?:https?://)\S+"
+    r"|spotify:(?:track|album|playlist|artist):[A-Za-z0-9]{22}"
+    r"|(?<![\w./@-])open\.spotify\.com/\S+"
     r"|(?<![\w./@-])(?:(?:www|m|music)\.)?(?:youtube\.com|youtu\.be)/\S+",
     re.IGNORECASE)
+
+SPOTIFY_HOSTS = {"open.spotify.com", "play.spotify.com"}
+SPOTIFY_PATH = re.compile(r"^/(?:intl-[a-z]{2}(?:-[a-z]{2})?/)?(?:embed/)?"
+                          r"(track|album|playlist|artist)/([A-Za-z0-9]{22})", re.IGNORECASE)
+SPOTIFY_URI = re.compile(r"^spotify:(track|album|playlist|artist):([A-Za-z0-9]{22})$",
+                         re.IGNORECASE)
+SPOTIFY_ID = re.compile(r"[A-Za-z0-9]{22}")
+SPOTIFY_URL = "https://open.spotify.com/{}/{}"
 
 LINK_TRAILING = ",;\"')]>"   # punctuation glued to links in prose, markdown or CSV cells
 STATUS_TAG = re.compile(r"\s*#\s*status\s*=\s*(\w+)(?:\s*@[^#]*)?\s*$", re.IGNORECASE)
@@ -35,6 +45,9 @@ URL_HEADERS = ("url", "link", "uri", "address", "video url", "youtube url",
                "youtube link", "video link")
 URL_KEYWORDS = ("uri", "url", "link")
 VIDEO_ID_HEADERS = ("video id", "video_id", "videoid", "video-id", "youtube id")
+# Spotify ID columns (a bare 22-character ID is read as a track, or the kind named)
+SPOTIFY_ID_HEADERS = ("track id", "track_id", "trackid", "spotify id", "spotify_id",
+                      "spotify track id", "song id", "id")
 TITLE_HEADERS = ("title", "name", "track", "song")
 TITLE_HEADERS_LOOSE = ("track name", "song name", "song title", "video title", "track title")
 STATUS_HEADERS = ("status", "state", "downloaded", "result")
@@ -49,12 +62,18 @@ JSON_MAX_DEPTH = 50
 # ==================== Normalisation ====================
 def normalize_url(raw: str) -> str:
     url = raw.strip().rstrip(LINK_TRAILING + ".!?")
-    if not url or url.lower().startswith("spotify:"):
+    if not url:
         return url
+    uri = SPOTIFY_URI.match(url)
+    if uri:                                  # spotify:track:ID -> the open.spotify.com link
+        return SPOTIFY_URL.format(uri.group(1).lower(), uri.group(2))
     if not re.match(r"https?://", url, re.IGNORECASE):
         url = "https://" + url
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
+    if host in SPOTIFY_HOSTS:                # drop ?si=, intl-xx/ and the like
+        path = SPOTIFY_PATH.match(parts.path)
+        return SPOTIFY_URL.format(path.group(1).lower(), path.group(2)) if path else url
     if host not in YOUTUBE_HOSTS:
         return url
     query = [(k, v) for k, v in parse_qsl(parts.query)
@@ -70,6 +89,8 @@ def extract_url(text: str, allow_bare_id: bool = False) -> Optional[str]:
     match = URL_IN_TEXT.search(text)
     if match:
         return normalize_url(match.group())
+    if allow_bare_id and SPOTIFY_ID.fullmatch(text.strip()):
+        return SPOTIFY_URL.format("track", text.strip())
     if allow_bare_id and VIDEO_ID.fullmatch(text.strip()):
         return VIDEO_URL.format(text.strip())
     return None
@@ -181,7 +202,7 @@ def _locate(rows):
     for i, row in enumerate(rows[:HEADER_SEARCH_ROWS]):
         low = [c.strip().lower() for c in row]
         url_col = _pick(low, URL_HEADERS, URL_KEYWORDS)
-        id_col = _pick(low, VIDEO_ID_HEADERS)
+        id_col = _pick(low, SPOTIFY_ID_HEADERS + VIDEO_ID_HEADERS)
         if url_col is not None or id_col is not None:
             return i, {"url": url_col, "id": id_col,
                        "title": _pick(low, TITLE_HEADERS, TITLE_HEADERS_LOOSE),
@@ -250,7 +271,7 @@ def _dict_fields(node: dict) -> dict:
         return node[keys[i]] if i is not None else None
 
     url_i = _pick(low, URL_HEADERS, URL_KEYWORDS)
-    id_i = _pick(low, VIDEO_ID_HEADERS)
+    id_i = _pick(low, SPOTIFY_ID_HEADERS + VIDEO_ID_HEADERS)
     title_i = _pick(low, TITLE_HEADERS, TITLE_HEADERS_LOOSE)
     status_i = _pick(low, STATUS_HEADERS)
 

@@ -1,4 +1,7 @@
-"""
+"""Spotify Music Downloader - the desktop window.
+
+    python gui_main.py
+
 The terminal program (python main.py) and this window are two front ends to
 the same project: they share the downloader, settings, cookies, logs, history
 and retry queue. This file sets the project up exactly as main.py does, then
@@ -26,12 +29,12 @@ def main() -> int:
     from managers import config_manager, log_manager
 
     app = QApplication(sys.argv)
-    app.setApplicationName("YouTube Music Downloader")
+    app.setApplicationName("Spotify Music Downloader")
 
     try:
         downloader = build_downloader()
     except OSError as error:
-        QMessageBox.critical(None, "YouTube Music Downloader",
+        QMessageBox.critical(None, "Spotify Music Downloader",
                              f"Couldn't create the download folder:\n{error}\n\n"
                              f"Change output_directory in {config_manager.config_path()} "
                              "and start again.")
@@ -39,7 +42,7 @@ def main() -> int:
     except Exception as error:
         log_manager.log_error(f"GUI start-up failed: {type(error).__name__}: {error}",
                               exc_info=True, console=False)
-        QMessageBox.critical(None, "YouTube Music Downloader",
+        QMessageBox.critical(None, "Spotify Music Downloader",
                              f"Error starting up:\n{type(error).__name__}: {error}")
         return 1
 

@@ -7,8 +7,10 @@ How a run works:
   - Links are tried most-promising first: the fewest failed runs, oldest first.
   - Each link gets up to `max_retries` attempts (from Settings), waiting
     `retry_delay`, then twice that, and so on between them. A throttled link,
-    a bot check or a permanent error ("Video is private") stops early, since
-    trying again straight away won't help.
+    a bot check or a permanent error (no match on YouTube Music, a deleted
+    Spotify link) stops early, since trying again straight away won't help.
+  - Links are Spotify links; entries without one ("Artist - Title") are
+    searches, which spotDL matches on Spotify and downloads.
   - Links that keep failing are skipped after `give_up_after` failed runs
     (include_exhausted=True retries them anyway).
   - Three throttled links in a row, or a bot check, ends the run; the rest stay
@@ -33,24 +35,26 @@ from colorama import Fore, Style, init
 init(autoreset=True)
 
 # Failures another attempt won't fix. Matched against the error from this run's
-# attempt, so a private or removed video isn't tried over and over.
+# attempt, so a song with no match or a deleted link isn't tried over and over.
 PERMANENT_MARKERS = (
-    "video is private", "private video", "members-only", "members only",
-    "copyright", "video unavailable", "has been removed",
-    "account associated with this video has been terminated",
+    "no match found", "no results found", "spotify couldn't find", "non existing id",
+    "invalid id", "rejected the client id",
 )
 
 # Waiting doesn't clear a bot check; only fresh cookies do. Stop the run.
 BOT_CHECK_MARKERS = ("sign in to confirm", "not a bot", "requires authentication")
 
-# Artist/title entries (from the old Spotify-era queue) are retried as a YouTube
-# search for "<artist> - <title>"; yt-dlp downloads the top result.
-SEARCH_PREFIX = "ytsearch1:"
+# Entries without a Spotify link are searches: spotDL looks "<artist> - <title>"
+# up on Spotify and downloads the best match. Searches are stored as plain text;
+# older queues stored them as YouTube searches ("ytsearch1:..."), which are
+# read the same way.
+SEARCH_PREFIX = ""
+LEGACY_SEARCH_PREFIX = "ytsearch1:"
 
 _STOP_MESSAGES = {
     "cancelled": "Cancelled.",
     "throttled": "Still being throttled - stopped. Try again later; the rest stay queued.",
-    "bot_check": "YouTube wants a sign-in (bot check). Refresh your cookies, then retry.",
+    "bot_check": "YouTube Music wants a sign-in (bot check). Refresh your cookies, then retry.",
     "interrupted": "Interrupted - remaining links stay queued.",
 }
 
@@ -96,7 +100,7 @@ def configure(downloader, log, batch_file=None, limiter=None, *,
     """
     Hand the module the pieces it works with. Call once at startup.
 
-    downloader  the YoutubeMusicDownloader (run_download, output_directory,
+    downloader  the SpotifyDownloader (run_download, output_directory,
                 max_retries, retry_delay, yt_dlp_sleep_min/max, rate_limit_*)
     log         managers.log_manager
     batch_file  downloader.batch_downloader (optional)
@@ -133,9 +137,20 @@ def _contains(text: str, markers) -> bool:
 
 # ==================== Old queue entries ====================
 def search_url(artist: str, track: str) -> str:
-    """A yt-dlp search 'URL' for an artist/title pair."""
-    query = " - ".join(part.strip() for part in (artist or "", track or "") if part.strip())
-    return f"{SEARCH_PREFIX}{query}"
+    """The spotDL search for an artist/title pair ("Artist - Title")."""
+    return " - ".join(part.strip() for part in (artist or "", track or "") if part.strip())
+
+
+def query_of(url: str) -> str:
+    """What spotDL is given for a queue entry: the link, or the search text."""
+    url = (url or "").strip()
+    return url[len(LEGACY_SEARCH_PREFIX):] if url.startswith(LEGACY_SEARCH_PREFIX) else url
+
+
+def is_search(url: str) -> bool:
+    """True when the entry is a search rather than a Spotify link."""
+    from downloader.base_downloader import is_spotify_url
+    return not is_spotify_url(query_of(url))
 
 
 def _legacy_items(data) -> List[dict]:
@@ -172,7 +187,7 @@ def import_legacy_failures(path=None) -> int:
             artist = str(old.get("artist") or "")
             track = str(old.get("track") or old.get("title") or "")
             url = search_url(artist, track)
-            if url == SEARCH_PREFIX or url in records:
+            if not url or url in records:
                 continue
             attempts = int(old.get("attempt_count", 0) or 0)
             records[url] = {
@@ -185,7 +200,7 @@ def import_legacy_failures(path=None) -> int:
             log._write_failures(records)
     if added:
         print(f"{Fore.CYAN}Converted {added} older artist/title entr"
-              f"{'y' if added == 1 else 'ies'} into YouTube searches.{Style.RESET_ALL}")
+              f"{'y' if added == 1 else 'ies'} into Spotify searches.{Style.RESET_ALL}")
     return added
 
 
@@ -222,26 +237,44 @@ def pending(include_permanent: bool = False,
 
 
 # ==================== Attempts ====================
+SONG_FILE = "{artists} - {title}.{output-ext}"     # spotDL output-template variables
+
+
 def _template(item_type: str) -> str:
+    """Where retried songs go: <music>/Retries/..., laid out like normal downloads."""
     downloader, _ = _require()
     root = Path(downloader.output_directory) / _state["output_subfolder"]
     if item_type == "album":
-        return str(root / "%(artist)s/%(album)s/%(artist)s - %(title)s.%(ext)s")
+        return str(root / "{album-artist}" / "{album}" / SONG_FILE)
     if item_type == "playlist":
-        return str(root / "%(playlist)s/%(artist)s - %(title)s.%(ext)s")
-    return str(root / "%(artist)s - %(title)s.%(ext)s")
+        return str(root / "{list-name}" / SONG_FILE)
+    if item_type == "artist":
+        return str(root / "{album-artist}" / "{album}" / SONG_FILE)
+    return str(root / SONG_FILE)
 
 
 def _attempt(entry: dict) -> Tuple[bool, str, bool]:
-    """(success, error, throttled) for one yt-dlp run."""
+    """(success, error, throttled) for one spotDL run."""
     downloader, _ = _require()
     item_type = entry.get("item_type") or "track"
-    args = ["--ignore-errors"] if item_type in ("album", "playlist") else []
+    query = query_of(entry["url"])
+    args = []
+    threads = 1
+    if item_type in ("album", "playlist", "artist") and not is_search(query):
+        # A whole link: the archive skips songs that already came down.
+        archive = getattr(downloader, "_archive_path", None)
+        if archive:
+            args = ["--archive", str(archive(query))]
+        threads = max(1, int(getattr(downloader, "max_concurrent", 1) or 1))
     if _state["limiter"]:
         _state["limiter"].acquire()
     try:
-        downloader.run_download(entry["url"], _template(item_type), args,
-                                show_progress=_state["show_progress"])
+        try:
+            downloader.run_download(query, _template(item_type), args,
+                                    show_progress=_state["show_progress"], threads=threads)
+        except TypeError:           # a downloader without the threads argument
+            downloader.run_download(query, _template(item_type), args,
+                                    show_progress=_state["show_progress"])
         return True, "", False
     except subprocess.CalledProcessError as error:
         # Prefer the downloader's classified reason, then the output tail;
@@ -251,7 +284,7 @@ def _attempt(entry: dict) -> Tuple[bool, str, bool]:
                   or str(error))
         return False, reason[:300], bool(getattr(error, "throttled", False))
     except RuntimeError:
-        raise                       # yt-dlp is missing; no point continuing
+        raise                       # spotDL is missing; no point continuing
     except Exception as error:      # anything else: record it, keep going
         return False, str(error)[:300], False
 
@@ -306,7 +339,7 @@ def _pause(throttle_streak: int) -> None:
         else:
             time.sleep(wait * random.uniform(1.0, 1.1))
     elif not limiter:
-        low = getattr(downloader, "yt_dlp_sleep_min", 3)
+        low = getattr(downloader, "yt_dlp_sleep_min", 3)     # pause between songs
         high = getattr(downloader, "yt_dlp_sleep_max", 7)
         time.sleep(random.uniform(low, max(low, high)))
 
@@ -341,8 +374,7 @@ def _mirror_to_sources(per_source: Dict[str, Dict[str, str]]) -> None:
 
 # ==================== Output ====================
 def _name(entry: dict) -> str:
-    title = entry.get("title") or entry["url"]
-    return title[len(SEARCH_PREFIX):] if title.startswith(SEARCH_PREFIX) else title
+    return query_of(entry.get("title") or entry["url"])
 
 
 def _print_plan(queue, permanent, exhausted) -> None:
@@ -359,8 +391,7 @@ def _print_plan(queue, permanent, exhausted) -> None:
         print(f"  {Fore.RED}Skipped, failed {_state['give_up_after']}+ times:"
               f"{Style.RESET_ALL} {len(exhausted)}")
     for entry in queue[:10]:
-        search = f"{Style.DIM} [search]{Style.RESET_ALL}" if \
-            entry["url"].startswith(SEARCH_PREFIX) else ""
+        search = f"{Style.DIM} [search]{Style.RESET_ALL}" if is_search(entry["url"]) else ""
         print(f"      - {_name(entry)[:55]} "
               f"{Style.DIM}(failed {real_attempts(entry)}x){Style.RESET_ALL}{search}")
     if len(queue) > 10:
@@ -490,7 +521,7 @@ def retry_failed(config=None) -> RetrySummary:
 
 def add_failed_track(artist: str, track: str, error: Optional[str] = None,
                      config=None, url: str = "") -> dict:
-    """Queue a failed track. Without a link, it's retried as a YouTube search."""
+    """Queue a failed track. Without a link, it's retried as a Spotify search."""
     _, log = _require()
     title = f"{artist} - {track}" if artist else track
     return log.record_failure(url or search_url(artist, track), title, error or "",

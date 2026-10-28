@@ -5,7 +5,7 @@ One module, two kinds of caller:
   Repairing (the downloader, preferences, menus):
       load(), update(**changes), save(config), reset()
       An invalid value is replaced with its default and reported through
-      on_error, so a hand-edited typo can never reach a yt-dlp command line.
+      on_error, so a hand-edited typo can never reach a spotDL command line.
 
   Reporting (the config menu's checks, scripts):
       validate_config(), update_config(key, value), apply_config_profile(name), ...
@@ -30,24 +30,27 @@ def get_app_dir() -> Path:
     """
     Where the program keeps its config, logs and history.
 
-      YTMUSIC_DOWNLOADER_HOME set -> that folder
-      packaged app on macOS       -> ~/Library/Application Support/YouTube Music Downloader
+      SPOTIFY_DOWNLOADER_HOME set -> that folder (YTMUSIC_DOWNLOADER_HOME still works)
+      packaged app on macOS       -> ~/Library/Application Support/Spotify Music Downloader
       packaged app elsewhere      -> the folder the program is in
       run as a script             -> the project root
     """
-    home = os.environ.get("YTMUSIC_DOWNLOADER_HOME")
+    home = os.environ.get("SPOTIFY_DOWNLOADER_HOME") or os.environ.get("YTMUSIC_DOWNLOADER_HOME")
     if home:
         return Path(home).expanduser().resolve()
     if getattr(sys, "frozen", False):
         if sys.platform == "darwin":
             # An installed app's own folder isn't the place for user data.
-            return Path.home() / "Library" / "Application Support" / "YouTube Music Downloader"
+            return Path.home() / "Library" / "Application Support" / "Spotify Music Downloader"
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent       # managers/ -> project root
 
 
 APP_DIR = get_app_dir()
-CONFIG_PATH = APP_DIR / "config" / "YoutubeMusicDownloader.json"
+CONFIG_PATH = APP_DIR / "config" / "SpotifyMusicDownloader.json"
+# The YouTube version's config; its settings are carried over once (see _migrate_old_config).
+OLD_CONFIG_PATH = APP_DIR / "config" / "YoutubeMusicDownloader.json"
+OLD_DEFAULT_OUTPUT = str(Path.home() / "Music" / "Collection" / "YouTube")
 DATA_DIR = APP_DIR / "data"          # the retry queue, tracks/playlists lists
 EXPORT_DIR = APP_DIR / "export"      # exported playlists (JSON)
 
@@ -72,17 +75,25 @@ CONFIG_SCHEMA: Dict[str, Dict[str, Any]] = OrderedDict([
                        "label": "Bitrate", "group": "Audio"}),
     # --- Folders and programs ---
     ("output_directory", {"type": str, "required": True, "path": True,
-                          "default": str(Path.home() / "Music" / "Collection" / "YouTube"),
+                          "default": str(Path.home() / "Music" / "Collection" / "Spotify"),
                           "label": "Output folder", "group": "Folders and programs"}),
     ("ffmpeg_path", {"type": str, "default": "", "path": True, "must_exist": True,
                      "label": "ffmpeg program",
                      "group": "Folders and programs"}),
-    ("ytdlp_path", {"type": str, "default": "", "path": True, "must_exist": True,
-                    "label": "yt-dlp program",
-                    "group": "Folders and programs"}),
+    ("spotdl_path", {"type": str, "default": "", "path": True, "must_exist": True,
+                     "label": "spotDL program",
+                     "group": "Folders and programs"}),
+    # --- Spotify ---
+    # Optional. spotDL reads Spotify without an account by default; your own app's
+    # Client ID/Secret (developer.spotify.com) avoids its shared rate limits.
+    ("spotify_client_id", {"type": str, "default": "", "optional_login": True,
+                           "label": "Spotify Client ID", "group": "Spotify"}),
+    ("spotify_client_secret", {"type": str, "default": "", "optional_login": True,
+                               "secret": True,
+                               "label": "Spotify Client Secret", "group": "Spotify"}),
     # --- Downloading ---
     ("max_retries", {"type": int, "default": 3, "min": 1, "max": 10,
-                     "label": "Attempts per link", "group": "Downloading"}),
+                     "label": "Attempts per song", "group": "Downloading"}),
     ("retry_delay", {"type": int, "default": 10, "min": 0, "max": 3600,
                      "label": "Retry delay (s)", "group": "Downloading"}),
     ("download_timeout", {"type": int, "default": 120, "min": 10, "max": 86400,
@@ -90,9 +101,9 @@ CONFIG_SCHEMA: Dict[str, Dict[str, Any]] = OrderedDict([
     ("max_concurrent", {"type": int, "default": 2, "min": 1, "max": 16,
                         "label": "Parallel downloads", "group": "Downloading"}),
     ("yt_dlp_sleep_min", {"type": int, "default": 3, "min": 0, "max": 3600,
-                          "label": "Min pause (s)", "group": "Downloading"}),
+                          "label": "Min pause between YouTube requests (s)", "group": "Downloading"}),
     ("yt_dlp_sleep_max", {"type": int, "default": 7, "min": 0, "max": 3600,
-                          "label": "Max pause (s)", "group": "Downloading"}),
+                          "label": "Max pause between YouTube requests (s)", "group": "Downloading"}),
     ("use_cookies", {"type": bool, "default": False,
                      "label": "Use cookies", "group": "Downloading"}),
     # --- Library sync ---
@@ -157,13 +168,43 @@ def configure(config_file, defaults: Optional[Dict[str, Any]] = None,
         _state["on_error"] = on_error
 
 
-def youtube_defaults() -> Dict[str, Any]:
+def spotify_defaults() -> Dict[str, Any]:
     return dict(DEFAULT_CONFIG)
 
 
-def configure_youtube(config_file=None, on_error: Optional[Callable[[str], None]] = None) -> None:
+def _migrate_old_config(config_file) -> None:
+    """
+    First run after switching to Spotify: carry the YouTube version's settings
+    over (format, bitrate, retries, cookies...). yt-dlp's location is dropped,
+    and the old default music folder becomes the new default one.
+    """
+    new, old = Path(config_file), OLD_CONFIG_PATH
+    if new.exists() or not old.is_file() or new.resolve() == old.resolve():
+        return
+    try:
+        data = _read_raw(str(old))
+    except (OSError, ValueError):
+        return
+    data.pop("ytdlp_path", None)
+    if str(data.get("output_directory", "")) == OLD_DEFAULT_OUTPUT:
+        data["output_directory"] = DEFAULT_CONFIG["output_directory"]
+    with _lock:
+        previous = _state["config_file"]
+        _state["config_file"] = str(new)
+        _save_unlocked(data)
+        _state["config_file"] = previous
+
+
+def configure_spotify(config_file=None, on_error: Optional[Callable[[str], None]] = None) -> None:
     """The usual setup: schema defaults and the standard config path."""
-    configure(config_file or CONFIG_PATH, youtube_defaults(), on_error)
+    config_file = config_file or CONFIG_PATH
+    _migrate_old_config(config_file)
+    configure(config_file, spotify_defaults(), on_error)
+
+
+# The names the YouTube version used, so older callers keep working.
+youtube_defaults = spotify_defaults
+configure_youtube = configure_spotify
 
 
 def config_path() -> str:
@@ -267,7 +308,7 @@ def _validate(config: Dict[str, Any]) -> Dict[str, Any]:
         else:
             clean[key] = value
 
-    # sleep_min must not exceed sleep_max, or yt-dlp errors out
+    # sleep_min must not exceed sleep_max, or yt-dlp (inside spotDL) errors out
     smin, smax = clean["yt_dlp_sleep_min"], clean["yt_dlp_sleep_max"]
     if smin > smax:
         _log_error(f"yt_dlp_sleep_min ({smin}) > max ({smax}); swapping")

@@ -12,10 +12,10 @@ from managers import config_manager, log_manager
 
 # ==================== Dependencies ====================
 # pip names (what you'd type after "pip install")
-PYTHON_DEPENDENCIES = ["colorama", "tqdm", "requests", "questionary"]
+PYTHON_DEPENDENCIES = ["spotdl", "colorama", "tqdm", "requests", "questionary"]
 OPTIONAL_PYTHON_DEPENDENCIES = ["browser-cookie3"]      # reading cookies from a browser
 
-SYSTEM_DEPENDENCIES = ["yt-dlp", "ffmpeg", "ffprobe"]
+SYSTEM_DEPENDENCIES = ["spotdl", "ffmpeg"]
 OPTIONAL_SYSTEM_DEPENDENCIES = ["deno", "node"]         # one JavaScript runtime is enough
 
 # ==================== Audio ====================
@@ -30,7 +30,7 @@ AUDIO_BITRATE_OPTIONS = {
     "192k": "Good quality (balanced size)",
     "256k": "High quality",
     "320k": "Best quality (larger file size)",
-    "auto": "Let yt-dlp choose (keeps the source quality)",
+    "auto": "Let spotDL choose (keeps the source quality)",
 }
 
 # ==================== Folders and files ====================

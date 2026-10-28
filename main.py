@@ -1,9 +1,9 @@
-"""YouTube Music Downloader - start here:
+"""Spotify Music Downloader - start here:
 
     python main.py
 
 Everything that happens before the main menu appears lives in this file:
-logging, config, cookies, the downloader, the retry manager and the
+logging, config, cookies, the downloader (spotDL), the retry manager and the
 startup checks. The menus themselves only show choices.
 """
 
@@ -29,12 +29,12 @@ CONFIG_FILE = config_manager.CONFIG_PATH
 
 # ==================== Banner ====================
 BANNER = """
-██╗   ██╗ ██████╗ ██╗   ██╗████████╗██╗   ██╗██████╗ ███████╗    ███╗   ███╗██╗   ██╗███████╗██╗ ██████╗    ██████╗  ██████╗ ██╗    ██╗███╗   ██╗██╗      ██████╗  █████╗ ██████╗ ███████╗██████╗ 
-╚██╗ ██╔╝██╔═══██╗██║   ██║╚══██╔══╝██║   ██║██╔══██╗██╔════╝    ████╗ ████║██║   ██║██╔════╝██║██╔════╝    ██╔══██╗██╔═══██╗██║    ██║████╗  ██║██║     ██╔═══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗
- ╚████╔╝ ██║   ██║██║   ██║   ██║   ██║   ██║██████╔╝█████╗      ██╔████╔██║██║   ██║███████╗██║██║         ██║  ██║██║   ██║██║ █╗ ██║██╔██╗ ██║██║     ██║   ██║███████║██║  ██║█████╗  ██████╔╝
-  ╚██╔╝  ██║   ██║██║   ██║   ██║   ██║   ██║██╔══██╗██╔══╝      ██║╚██╔╝██║██║   ██║╚════██║██║██║         ██║  ██║██║   ██║██║███╗██║██║╚██╗██║██║     ██║   ██║██╔══██║██║  ██║██╔══╝  ██╔══██╗
-   ██║   ╚██████╔╝╚██████╔╝   ██║   ╚██████╔╝██████╔╝███████╗    ██║ ╚═╝ ██║╚██████╔╝███████║██║╚██████╗    ██████╔╝╚██████╔╝╚███╔███╔╝██║ ╚████║███████╗╚██████╔╝██║  ██║██████╔╝███████╗██║  ██║
-   ╚═╝    ╚═════╝  ╚═════╝    ╚═╝    ╚═════╝ ╚═════╝ ╚══════╝    ╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚═╝ ╚═════╝    ╚═════╝  ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═╝
+███████╗██████╗  ██████╗ ████████╗██╗███████╗██╗   ██╗    ███╗   ███╗██╗   ██╗███████╗██╗ ██████╗    ██████╗  ██████╗ ██╗    ██╗███╗   ██╗██╗      ██████╗  █████╗ ██████╗ ███████╗██████╗
+██╔════╝██╔══██╗██╔═══██╗╚══██╔══╝██║██╔════╝╚██╗ ██╔╝    ████╗ ████║██║   ██║██╔════╝██║██╔════╝    ██╔══██╗██╔═══██╗██║    ██║████╗  ██║██║     ██╔═══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗
+███████╗██████╔╝██║   ██║   ██║   ██║█████╗   ╚████╔╝     ██╔████╔██║██║   ██║███████╗██║██║         ██║  ██║██║   ██║██║ █╗ ██║██╔██╗ ██║██║     ██║   ██║███████║██║  ██║█████╗  ██████╔╝
+╚════██║██╔═══╝ ██║   ██║   ██║   ██║██╔══╝    ╚██╔╝      ██║╚██╔╝██║██║   ██║╚════██║██║██║         ██║  ██║██║   ██║██║███╗██║██║╚██╗██║██║     ██║   ██║██╔══██║██║  ██║██╔══╝  ██╔══██╗
+███████║██║     ╚██████╔╝   ██║   ██║██║        ██║       ██║ ╚═╝ ██║╚██████╔╝███████║██║╚██████╗    ██████╔╝╚██████╔╝╚███╔███╔╝██║ ╚████║███████╗╚██████╔╝██║  ██║██████╔╝███████╗██║  ██║
+╚══════╝╚═╝      ╚═════╝    ╚═╝   ╚═╝╚═╝        ╚═╝       ╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚═╝ ╚═════╝    ╚═════╝  ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═╝
 """
 BANNER_INDENT = 8
 
@@ -54,25 +54,25 @@ def show_banner() -> None:
         drawable = False
 
     if drawable and columns >= width:
-        print(f"{Fore.RED}{Style.BRIGHT}")
+        print(f"{Fore.GREEN}{Style.BRIGHT}")
         for line in lines:
             print(" " * BANNER_INDENT + line)
         print(Style.RESET_ALL)
-    print(f"{Fore.YELLOW}{Style.BRIGHT}YouTube Music Downloader{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}{Style.BRIGHT}Spotify Music Downloader{Style.RESET_ALL}")
     print(f"{Fore.YELLOW}{Style.BRIGHT}Initializing...{Style.RESET_ALL}")
 
 
 def build_downloader():
     """Set up logging, config and cookies, then create the downloader (which wires itself)."""
-    from downloader.base_downloader import YoutubeMusicDownloader
+    from downloader.base_downloader import SpotifyDownloader
 
     log_manager.setup()
     log_manager.reset_session()
-    config_manager.configure_youtube(str(CONFIG_FILE), on_error=log_manager.log_warning)
+    config_manager.configure_spotify(str(CONFIG_FILE), on_error=log_manager.log_warning)
     preferences.configure(config_manager, Enhanced_Menu, cookie_manager)
     cookies_menu.restore()                    # last active cookie file
 
-    downloader = YoutubeMusicDownloader()     # reads its settings from the config
+    downloader = SpotifyDownloader()         # reads its settings from the config
     retry_manager.configure(downloader, log_manager, batch_downloader, rate_limiter)
     return downloader
 
@@ -89,15 +89,20 @@ def startup_checks() -> None:
 
     # Programs the downloader can't work without.
     from tools.dependency_check import find_program
-    for name in ("yt-dlp", "ffmpeg"):
+    from tools.dependency_check import spotdl_command
+    command, reason = spotdl_command()
+    if not command:
+        log_warning(f"spotDL {reason}. Downloads won't work until it's installed: "
+                    "pip install -U spotdl (Tools Menu -> Check dependencies).")
+    for name in ("ffmpeg",):
         path, reason = find_program(name)
         if not path:
             log_warning(f"{name} {reason}. Downloads won't work until it's installed "
                         "(Tools Menu -> Check dependencies).")
 
-    # Check for yt-dlp updates (at most once a day; silent unless there's one)
+    # Check for spotDL updates (one line; skipped quietly when offline)
     try:
-        from tools.ytdlp_update_checker import check_on_startup
+        from tools.spotdl_update_checker import check_on_startup
         check_on_startup()
     except Exception:
         pass  # Silently ignore update check failures

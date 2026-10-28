@@ -1,7 +1,7 @@
 """Check that everything the downloader needs is installed, and say how to fix what isn't.
 
-Also home to find_program() and run_program(), which the other tools use so
-they all respect the ffmpeg/yt-dlp locations set in Settings.
+Also home to find_program(), spotdl_command() and run_program(), which the
+other tools use so they all respect the spotDL/ffmpeg locations set in Settings.
 
 Usage:
     from tools.dependency_check import dependency_check
@@ -24,7 +24,7 @@ from typing import List, Optional, Tuple
 from menu.colorful_menu import Enhanced_Menu
 
 # Which Settings key can point at each program.
-CONFIG_KEYS = {"yt-dlp": "ytdlp_path", "ffmpeg": "ffmpeg_path", "ffprobe": "ffmpeg_path"}
+CONFIG_KEYS = {"spotdl": "spotdl_path", "ffmpeg": "ffmpeg_path", "ffprobe": "ffmpeg_path"}
 
 _SYSTEM = platform.system()          # "Windows", "Darwin", "Linux"
 
@@ -35,16 +35,16 @@ def _install_hint(windows: str, mac: str, linux: str) -> str:
 
 # (name, version flag, what it's for, required, how to install)
 PROGRAMS = (
-    ("yt-dlp", "--version", "does the downloading", True,
-     f"{Path(sys.executable).name} -m pip install -U yt-dlp"),
-    ("ffmpeg", "-version", "converts audio and embeds thumbnails", True,
-     _install_hint("winget install Gyan.FFmpeg", "brew install ffmpeg",
-                   "sudo apt install ffmpeg  (or your distro's package manager)")),
-    ("ffprobe", "-version", "reads audio details (comes with ffmpeg)", True,
-     "installed together with ffmpeg"),
-    ("deno", "--version", "JavaScript runtime some YouTube formats need", False,
-     _install_hint("winget install DenoLand.Deno", "brew install deno",
-                   "curl -fsSL https://deno.land/install.sh | sh")),
+    ("spotdl", "--version", "reads Spotify and does the downloading", True,
+     f"{Path(sys.executable).name} -m pip install -U spotdl"),
+    ("ffmpeg", "-version", "converts the audio", True,
+     _install_hint("winget install Gyan.FFmpeg  (or: spotdl --download-ffmpeg)",
+                   "brew install ffmpeg  (or: spotdl --download-ffmpeg)",
+                   "sudo apt install ffmpeg  (or: spotdl --download-ffmpeg)")),
+    ("deno", "--version", "JavaScript runtime YouTube now needs for some audio", False,
+     _install_hint("spotdl --download-deno  (or: winget install DenoLand.Deno)",
+                   "spotdl --download-deno  (or: brew install deno)",
+                   "spotdl --download-deno  (or: curl -fsSL https://deno.land/install.sh | sh)")),
     ("node", "--version", "alternative JavaScript runtime", False,
      _install_hint("winget install OpenJS.NodeJS.LTS", "brew install node",
                    "sudo apt install nodejs")),
@@ -56,6 +56,7 @@ PACKAGES = (
     ("tqdm", "tqdm", "progress bars", True),
     ("requests", "requests", "update checks and cookie tests", True),
     ("questionary", "questionary", "arrow-key menus", True),
+    ("yt_dlp", "yt-dlp", "fetches the audio from YouTube for spotDL (installed with it)", False),
     ("browser_cookie3", "browser-cookie3", "reading cookies straight from a browser", False),
     ("PySide6", "PySide6", "the desktop window (gui_main.py)", False),
 )
@@ -130,8 +131,38 @@ def run_program(args: List[str], timeout: float = 30) -> Tuple[Optional[int], st
     return result.returncode, (result.stdout or "") + (result.stderr or "")
 
 
+def spotdl_command() -> Tuple[Optional[List[str]], str]:
+    """
+    (the command that runs spotDL, where it came from), or (None, reason).
+
+    The spotdl program (Settings, bundled bin/, PATH) if there is one; otherwise,
+    when spotDL is installed as a Python package but its launcher isn't on PATH
+    (common on Windows), "python -m spotdl".
+    """
+    path, where = find_program("spotdl")
+    if path:
+        return [path], where
+    if "Settings" in where:
+        return None, where                   # a wrong location in Settings: say so
+    if not getattr(sys, "frozen", False) and importlib.util.find_spec("spotdl") is not None:
+        return [sys.executable, "-m", "spotdl"], "Python package"
+    return None, where
+
+
 def program_version(name: str, flag: str = "--version") -> Tuple[Optional[str], str]:
     """(short version or None, path or reason)."""
+    if name == "spotdl":
+        command, where = spotdl_command()
+        if not command:
+            return None, where
+        path = command[0] if len(command) == 1 else f"{command[0]} -m spotdl"
+        code, output = run_program([*command, flag], timeout=60)
+        if code is None:
+            return None, output
+        lines = [l.strip() for l in output.strip().splitlines() if l.strip()]
+        version = next((l for l in reversed(lines) if re.fullmatch(r"v?\d+(\.\d+)+\S*", l)),
+                       lines[-1] if lines else "")
+        return (version or "unknown version")[:40], path
     path, where = find_program(name)
     if not path:
         return None, where
@@ -229,8 +260,8 @@ def print_report(report: DependencyReport) -> None:
         Enhanced_Menu.print_status("Everything required is installed.", "success")
     if not report.has_js_runtime:
         js = next(d for d in report.items if d.name == "deno")
-        Enhanced_Menu.print_status("No JavaScript runtime found. If downloads fail with "
-                                   "'No supported JS runtime', install Deno (recommended):\n"
+        Enhanced_Menu.print_status("No JavaScript runtime found. If songs fail with "
+                                   "'No supported JS runtime', install Deno:\n"
                                    f"{js.fix}", "warning")
     optional = [d for d in report.items if not d.required and not d.found
                 and d.name not in ("deno", "node")]

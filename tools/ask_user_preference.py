@@ -40,7 +40,7 @@ QUALITY_HELP = {
     "192k": "Good quality",
     "128k": "Standard quality",
     "8k-160k": "Lower qualities (enter the exact value, e.g. 96k)",
-    "auto": "Let yt-dlp choose",
+    "auto": "Let spotDL choose (keeps the source quality)",
     "disable": "Don't set a bitrate",
 }
 
@@ -159,9 +159,10 @@ def _ask_int(key: str, description: str, current: int, low: int, high: int) -> i
 
 def _ask_cookies(current: bool) -> bool:
     print(f"\n{Fore.CYAN}Cookies can help with:{Style.RESET_ALL}")
-    print("  Age-restricted content")
-    print("  Region-restricted videos")
-    print("  Private playlists")
+    print(f"  {Style.DIM}(spotDL gets the audio from YouTube Music, so these are "
+          f"YouTube Music cookies){Style.RESET_ALL}")
+    print("  Age-restricted songs")
+    print("  YouTube Music Premium quality (256k)")
     print("  YouTube's 'confirm you're not a bot' checks")
     use = _ask_yn("Use cookies for authentication?", current)
     if use and not cookie_file(True):
@@ -181,7 +182,7 @@ def _ask_cookie_file() -> Optional[Path]:
         _status("No cookie file is loaded yet. Add one in the Cookie Manager.", "warning")
         return None
 
-    print(f"  {Style.DIM}Export cookies.txt from a browser signed in to YouTube "
+    print(f"  {Style.DIM}Export cookies.txt from a browser signed in to music.youtube.com "
           f"(see Cookies Menu -> manual export for how).{Style.RESET_ALL}")
     while True:
         answer = _ask("Path to your cookies.txt (Enter to skip)", None)
@@ -215,10 +216,10 @@ def _cookie_directory() -> Path:
 
 def cookie_file(use_cookies: bool, log=None) -> Optional[str]:
     """
-    The cookie file yt-dlp should use, or None.
+    The cookie file spotDL should use, or None.
 
     The cookie manager's active file wins; otherwise the newest .txt in the
-    cookie folder. Returned as an absolute path so yt-dlp doesn't depend on
+    cookie folder. Returned as an absolute path so spotDL doesn't depend on
     the working directory.
     """
     if not use_cookies:

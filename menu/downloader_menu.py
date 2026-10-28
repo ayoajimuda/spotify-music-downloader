@@ -1,4 +1,4 @@
-"""Downloads menu: routes to YoutubeMusicDownloader's download methods.
+"""Downloads menu: routes to SpotifyDownloader's download methods.
 
 The downloader does the work (and asks for links itself); this menu picks
 what to run, chooses batch files, and shows what downloads will use.
@@ -15,7 +15,7 @@ import questionary
 
 from managers import config_manager, cookie_manager, log_manager
 from menu.colorful_menu import Enhanced_Menu
-from utils.track_checker import check_downloaded_files
+from utils.check_downloads import check_downloaded_files
 
 BACK = "Back"
 LOSSLESS = ("flac", "wav")
@@ -94,7 +94,7 @@ def download_from_file(downloader) -> None:
             return "Use a .txt, .csv or .json file"
         return True
 
-    answer = questionary.path("Path to a .txt, .csv or .json file of links (empty to cancel):",
+    answer = questionary.path("Path to a .txt, .csv or .json file of Spotify links (empty to cancel):",
                               validate=valid).ask()
     name = (answer or "").strip().strip('"').strip("'")
     if name:
@@ -104,7 +104,7 @@ def download_from_file(downloader) -> None:
 def download_pending_from(downloader, path: Path) -> None:
     total, pending = _pending(downloader, path)
     if not total:
-        Enhanced_Menu.print_status(f"No links found in {path.name}. Batch files need YouTube "
+        Enhanced_Menu.print_status(f"No links found in {path.name}. Batch files need Spotify "
                                    "links (a url column or one link per line).", "warning")
         return
     if not pending:
@@ -120,6 +120,7 @@ def _choices(downloader) -> List[Tuple[str, Callable[[], None]]]:
         ("Download a track", downloader.download_track),
         ("Download an album", downloader.download_album),
         ("Download a playlist", downloader.download_playlist),
+        ("Download an artist (all their albums and singles)", downloader.download_artist),
         ("Download every link in a file (.txt, .csv, .json)",
          lambda: download_from_file(downloader)),
     ]
